@@ -1,0 +1,3895 @@
+{
+  "info": {
+    "name": "Ridehail Platform – end-to-end tests",
+    "description": "Gateway → trip-service (saga, outbox, ABAC, Resilience4j) → location-service (CQRS). See TESTING_GUIDE.md. Run folders in order 0 → 10.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0 · Setup & smoke tests",
+      "description": "Run these first. Verifies every component is up and obtains the four tokens and the Kafka cluster id used by later folders.",
+      "item": [
+        {
+          "name": "0.1 Gateway health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('UP', function () { pm.expect(pm.response.json().status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/actuator/health"
+            },
+            "description": "Gateway :8080. If this fails the gateway isn't running (or Redis is down).",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "0.2 trip-service health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('UP', function () { pm.expect(pm.response.json().status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{trip_url}}/actuator/health"
+            },
+            "description": "trip-service :8081 (checks PostgreSQL, Kafka and circuit-breaker health indicators).",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "0.3 location-service health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('UP', function () { pm.expect(pm.response.json().status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/actuator/health"
+            },
+            "description": "location-service :8082 (PostgreSQL + Redis).",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "0.4 Kafka REST – discover cluster id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var id = pm.response.json().data[0].cluster_id;",
+                  "pm.collectionVariables.set('kafka_cluster_id', id);",
+                  "pm.test('cluster id stored', function () { pm.expect(id).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters"
+            },
+            "description": "Needed for the 'simulate payment/matching service' requests.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "0.5 Get RIDER (rider1) token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function jwt(t){var p=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');while(p.length%4)p+='=';return JSON.parse(atob(p));}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json(); var c = jwt(j.access_token);",
+                  "pm.collectionVariables.set('rider_token', j.access_token);",
+                  "pm.collectionVariables.set('rider_id', c.sub);",
+                  "pm.test('JWT carries realm role RIDER', function () { pm.expect(c.realm_access.roles).to.include('RIDER'); });",
+                  "console.log('rider_id =', c.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token"
+            },
+            "description": "Password-grant login against Keycloak (realm `ridehail`). Stores `rider_token` and `rider_id` (the JWT `sub`, which services use as the user id in ownership/assignment checks).",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{rider_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{password}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "0.6 Get DRIVER (driver1) token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function jwt(t){var p=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');while(p.length%4)p+='=';return JSON.parse(atob(p));}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json(); var c = jwt(j.access_token);",
+                  "pm.collectionVariables.set('driver_token', j.access_token);",
+                  "pm.collectionVariables.set('driver_id', c.sub);",
+                  "pm.test('JWT carries realm role DRIVER', function () { pm.expect(c.realm_access.roles).to.include('DRIVER'); });",
+                  "console.log('driver_id =', c.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token"
+            },
+            "description": "Password-grant login against Keycloak (realm `ridehail`). Stores `driver_token` and `driver_id` (the JWT `sub`, which services use as the user id in ownership/assignment checks).",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{driver_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{password}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "0.7 Get second DRIVER (driver2) token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function jwt(t){var p=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');while(p.length%4)p+='=';return JSON.parse(atob(p));}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json(); var c = jwt(j.access_token);",
+                  "pm.collectionVariables.set('driver2_token', j.access_token);",
+                  "pm.collectionVariables.set('driver2_id', c.sub);",
+                  "pm.test('JWT carries realm role DRIVER', function () { pm.expect(c.realm_access.roles).to.include('DRIVER'); });",
+                  "console.log('driver2_id =', c.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token"
+            },
+            "description": "Password-grant login against Keycloak (realm `ridehail`). Stores `driver2_token` and `driver2_id` (the JWT `sub`, which services use as the user id in ownership/assignment checks).",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{driver2_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{password}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "0.8 Get ADMIN (admin1) token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function jwt(t){var p=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');while(p.length%4)p+='=';return JSON.parse(atob(p));}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var j = pm.response.json(); var c = jwt(j.access_token);",
+                  "pm.collectionVariables.set('admin_token', j.access_token);",
+                  "pm.collectionVariables.set('admin_id', c.sub);",
+                  "pm.test('JWT carries realm role ADMIN', function () { pm.expect(c.realm_access.roles).to.include('ADMIN'); });",
+                  "console.log('admin_id =', c.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token"
+            },
+            "description": "Password-grant login against Keycloak (realm `ridehail`). Stores `admin_token` and `admin_id` (the JWT `sub`, which services use as the user id in ownership/assignment checks).",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "password"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{admin_username}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{password}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 · Edge security (negative tests)",
+      "description": "Proves the gateway's JWT validation, RBAC, internal-API blocking, input validation, and zero-trust re-validation in the services.",
+      "item": [
+        {
+          "name": "1.1 No token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Gateway rejects unauthenticated calls.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1.2 Garbage token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Signature/format validation against Keycloak JWKS.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1.3 DRIVER cannot book (RBAC) → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Coarse RBAC at the gateway: `POST /api/v1/trips` needs ROLE_RIDER.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1.4 RIDER cannot push driver location → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "`/api/v1/drivers/**` needs ROLE_DRIVER.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"lat\": 17.44, \"lng\": 78.37, \"status\": \"AVAILABLE\", \"vehicleType\": \"CAB\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1.5 /internal/** is blocked at the edge → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/internal/v1/surge?lat={{pickup_lat}}&lng={{pickup_lng}}"
+            },
+            "description": "Even an ADMIN cannot reach service-to-service APIs through the public gateway (`denyAll`).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1.6 Zero trust: trip-service rejects missing token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{trip_url}}/api/v1/trips/00000000-0000-0000-0000-000000000000"
+            },
+            "description": "Bypassing the gateway doesn't help: every downstream service validates the JWT itself.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "1.7 Bean-validation: latitude 95° → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "`@DecimalMax(\"90\")` on `GeoPoint.lat`. No trip is created.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": 95, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1.8 ABAC: unknown trip id → 403 (not 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/00000000-0000-0000-0000-000000000000"
+            },
+            "description": "The evaluator denies missing trips so ids cannot be probed.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · Location service (CQRS command → Debezium → Redis read model)",
+      "description": "Command side is called through the gateway; the query side (`/internal/**`) is called DIRECTLY on :8082 because the gateway blocks it. Each read request waits `propagation_delay_ms` (default 2 s) for Postgres → Debezium → Kafka → Redis.",
+      "item": [
+        {
+          "name": "2.1 driver1 goes AVAILABLE at the pickup point",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "Upsert in `driver_location` + outbox row `DRIVER_LOCATION_UPDATED` in one transaction → 202 (eventually consistent).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{pickup_lat}},\n  \"lng\": {{pickup_lng}},\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2.2 driver2 goes AVAILABLE ~25 km away",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "A second driver, deliberately outside the 3 km search radius.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver2_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{far_lat}},\n  \"lng\": {{far_lng}},\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2.3 Nearby drivers within 3 km (expects driver1 only)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var d = pm.response.json();",
+                  "pm.test('driver1 is found', function () { pm.expect(d.map(function(x){return x.driverId;})).to.include(pm.collectionVariables.get('driver_id')); });",
+                  "pm.test('driver2 (25 km away) is NOT found', function () { pm.expect(d.map(function(x){return x.driverId;})).to.not.include(pm.collectionVariables.get('driver2_id')); });",
+                  "pm.test('sorted nearest-first', function () { for (var i=1;i<d.length;i++) pm.expect(d[i].distanceKm).to.be.at.least(d[i-1].distanceKm); });",
+                  "pm.test('fast query (<250 ms client-side on localhost; server-side GEOSEARCH is ~1 ms)', function () { pm.expect(pm.response.responseTime).to.be.below(250); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/drivers/nearby?lat={{pickup_lat}}&lng={{pickup_lng}}&radiusKm=3&vehicleType=CAB&limit=10"
+            },
+            "description": "Redis `GEOSEARCH BYRADIUS`. If it is empty: Debezium isn't running, or wait longer.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.4 Validation: radius 50 km exceeds the 10 km cap → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/drivers/nearby?lat={{pickup_lat}}&lng={{pickup_lng}}&radiusKm=50&vehicleType=CAB&limit=10"
+            },
+            "description": "Radius is capped at 10 km by `@DecimalMax(\"10\")`, so 50 km is rejected → 400 demonstrating input validation on the query API.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.5 Driver context (used by ABAC)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var c = pm.response.json();",
+                  "pm.test('status AVAILABLE', function () { pm.expect(c.status).to.eql('AVAILABLE'); });",
+                  "pm.test('location equals last ping', function () { pm.expect(c.lat).to.be.closeTo(Number(pm.collectionVariables.get('pickup_lat')), 0.0001); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/drivers/{{driver_id}}"
+            },
+            "description": "What `TripPermissionEvaluator` reads when a driver accepts/starts a trip.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.6 Driver context for unknown driver → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/drivers/no-such-driver"
+            },
+            "description": "trip-service's client maps this to 'empty' (a business answer, not a breaker failure).",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.7 Surge quote",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var s = pm.response.json();",
+                  "pm.test('multiplier in [1,3]', function () { pm.expect(Number(s.multiplier)).to.be.within(1,3); });",
+                  "pm.test('supply counts driver1', function () { pm.expect(s.supply).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/surge?lat={{pickup_lat}}&lng={{pickup_lng}}"
+            },
+            "description": "Each call increments the demand counter of the ~2 km grid cell (5-minute window). Run it many times via the Runner to see the multiplier rise when demand > supply.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.8 driver1 goes OFFLINE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "OFFLINE removes the driver from the GEO index.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{pickup_lat}},\n  \"lng\": {{pickup_lng}},\n  \"status\": \"OFFLINE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2.9 Nearby after OFFLINE (driver1 must be gone)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('driver1 no longer searchable', function () { pm.expect(pm.response.json().map(function(x){return x.driverId;})).to.not.include(pm.collectionVariables.get('driver_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{location_url}}/internal/v1/drivers/nearby?lat={{pickup_lat}}&lng={{pickup_lng}}&radiusKm=3&vehicleType=CAB"
+            },
+            "description": "Read model updated by the Kafka projector.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "2.10 driver1 back AVAILABLE at the pickup point",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "Restores the state the booking flows below rely on.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{pickup_lat}},\n  \"lng\": {{pickup_lng}},\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2.11 Validation: longitude 200° → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "`@DecimalMax(\"180\")` on `lng`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": 17.44,\n  \"lng\": 200,\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · Happy path: book → hold → match → accept → start → complete → capture",
+      "description": "The full orchestrated saga. Requests marked ⚙ SIMULATE play the role of payment-service / matching-service by publishing the reply events they would emit. Run the folder top to bottom (Runner, or one by one).",
+      "item": [
+        {
+          "name": "3.1 Rider books a ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. ",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.2 Rider tries to book a second ride → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409', function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "One active trip per rider (service check + partial unique index in PostgreSQL).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.3 Rider reads own trip (REQUESTED)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "Stays REQUESTED: the HOLD_PAYMENT command is waiting for a payment-service (we simulate it next).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.4 ABAC: unrelated driver cannot read the trip → 403",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "VIEW is allowed only for the owner, the assigned driver or ADMIN.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver2_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.5 ADMIN can read any trip",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "ABAC rule: `hasRole('ADMIN')`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.6 ⚙ SIMULATE payment-service → PAYMENT_HELD",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Saga: AWAITING_PAYMENT_HOLD → AWAITING_DRIVER_MATCH; emits MATCH_DRIVER.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-{{$randomInt}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.7 Trip is PAYMENT_HELD",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is PAYMENT_HELD', function () { pm.expect(t.status).to.eql('PAYMENT_HELD'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.8 ⚙ SIMULATE matching-service → DRIVER_MATCHED (driver1)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('DRIVER_MATCHED'));",
+                  "console.log('Simulating DRIVER_MATCHED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.matching/records"
+            },
+            "description": "Saga: → AWAITING_DRIVER_ACCEPT. The driver is *offered* the trip; emits DRIVER_OFFERED for notifications.\n\nProduces to `outbox.event.matching` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"driverId\": \"{{driver_id}}\", \"etaSeconds\": 180 } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.9 Trip is DRIVER_OFFERED to driver1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is DRIVER_OFFERED', function () { pm.expect(t.status).to.eql('DRIVER_OFFERED'); });",
+                  "pm.test('driver assigned = driver1', function () { pm.expect(t.driverId).to.eql(pm.collectionVariables.get('driver_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.10 ABAC: driver2 (not offered) cannot accept → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/accept"
+            },
+            "description": "Rule: `trip.isAssignedTo(subject)` — the offer belongs to driver1.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver2_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.11 RBAC: rider cannot accept → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/accept"
+            },
+            "description": "`hasRole('DRIVER')` fails before ABAC even runs.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.12 driver1 accepts → DRIVER_ASSIGNED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('DRIVER_ASSIGNED', function () { pm.expect(pm.response.json().status).to.eql('DRIVER_ASSIGNED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/accept"
+            },
+            "description": "ABAC passes because: offered to this driver, state = DRIVER_OFFERED, driver AVAILABLE and within 3 km of the pickup (live location fetched from location-service).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.13 driver1 drives away (~25 km)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "Geofence test setup: moves the driver out of range of the pickup.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{far_lat}},\n  \"lng\": {{far_lng}},\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.14 ABAC geofence: start trip while far away → 403",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/start"
+            },
+            "description": "START requires the driver within 300 m of the pickup.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.15 driver1 arrives at the pickup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "Back at the pickup coordinates.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": {{pickup_lat}},\n  \"lng\": {{pickup_lng}},\n  \"status\": \"AVAILABLE\",\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.16 driver1 starts the trip → IN_PROGRESS",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('IN_PROGRESS', function () { pm.expect(pm.response.json().status).to.eql('IN_PROGRESS'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/start"
+            },
+            "description": "Within 300 m ⇒ allowed.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.17 Rider cannot cancel once in progress → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/cancel"
+            },
+            "description": "ABAC: CANCEL only while the state is REQUESTED … DRIVER_ASSIGNED.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"changed my mind\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.18 driver1 completes the trip (8.5 km)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('COMPLETED', function () { pm.expect(t.status).to.eql('COMPLETED'); });",
+                  "pm.test('final fare = (50 + 14*8.5) * surge', function () { pm.expect(Number(t.finalFare)).to.be.closeTo((50+14*8.5)*Number(t.surgeMultiplier), 0.02); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/complete"
+            },
+            "description": "Saga: → AWAITING_PAYMENT_CAPTURE; emits CAPTURE_PAYMENT (command) and TRIP_COMPLETED (event) via the outbox.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"distanceKm\": 8.5 }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.19 ⚙ SIMULATE payment-service → PAYMENT_CAPTURED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_CAPTURED'));",
+                  "console.log('Simulating PAYMENT_CAPTURED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Saga reaches COMPLETED. Verify in PostgreSQL (see guide).\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3.20 Final trip state",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is COMPLETED', function () { pm.expect(t.status).to.eql('COMPLETED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "Trip is COMPLETED and has a finalFare.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.21 Double-complete → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/complete"
+            },
+            "description": "State guard: COMPLETE is only allowed while IN_PROGRESS (ABAC denies).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"distanceKm\": 8.5 }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · Compensation A: payment hold fails",
+      "description": "PAYMENT_HOLD_FAILED → saga CANCELLED → local compensating command CANCEL_BOOKING (no remote release needed: nothing was held).",
+      "item": [
+        {
+          "name": "4.1 Rider books a ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. ",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "4.2 ⚙ SIMULATE payment-service → PAYMENT_HOLD_FAILED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HOLD_FAILED'));",
+                  "console.log('Simulating PAYMENT_HOLD_FAILED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Declined card / empty wallet.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"reason\": \"INSUFFICIENT_FUNDS\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "4.3 Trip is CANCELLED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is CANCELLED', function () { pm.expect(t.status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "Also emits TRIP_CANCELLED on `outbox.event.trip`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 · Compensation B: no driver found → release payment hold",
+      "description": "DRIVER_MATCH_FAILED → saga COMPENSATING → RELEASE_PAYMENT_HOLD command → PAYMENT_RELEASED → CANCEL_BOOKING.",
+      "item": [
+        {
+          "name": "5.1 Rider books a ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. ",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "5.2 ⚙ SIMULATE PAYMENT_HELD",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Hold placed.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-{{$randomInt}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "5.3 ⚙ SIMULATE matching-service → DRIVER_MATCH_FAILED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('DRIVER_MATCH_FAILED'));",
+                  "console.log('Simulating DRIVER_MATCH_FAILED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.matching/records"
+            },
+            "description": "Saga → COMPENSATING and emits RELEASE_PAYMENT_HOLD to `outbox.event.payment-command` (check with the Kafka consumer command in the guide).\n\nProduces to `outbox.event.matching` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"reason\": \"NO_DRIVERS_NEARBY\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "5.4 Trip still PAYMENT_HELD while compensation is in flight",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is PAYMENT_HELD', function () { pm.expect(t.status).to.eql('PAYMENT_HELD'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "The trip is cancelled only AFTER the payment service confirms the release (saga ordering).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.5 ⚙ SIMULATE payment-service → PAYMENT_RELEASED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_RELEASED'));",
+                  "console.log('Simulating PAYMENT_RELEASED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Compensation completes.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "5.6 Trip is CANCELLED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is CANCELLED', function () { pm.expect(t.status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 · Rider-initiated cancellation",
+      "description": "Cancel is a saga-aware action: refused while a payment hold is in flight, allowed afterwards and triggers compensation.",
+      "item": [
+        {
+          "name": "6.1 Rider books a ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. ",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6.2 Cancel while payment hold is pending → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409', function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/cancel"
+            },
+            "description": "ABAC allows it (state REQUESTED) but the saga refuses: it is in AWAITING_PAYMENT_HOLD → IllegalTripStateException → 409.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"too early\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6.3 ⚙ SIMULATE PAYMENT_HELD",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Hold placed; matching in progress.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-{{$randomInt}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6.4 Rider cancels while matching → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/cancel"
+            },
+            "description": "Emits CANCEL_MATCH + RELEASE_PAYMENT_HOLD; saga → COMPENSATING.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"found another ride\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6.5 ⚙ SIMULATE PAYMENT_RELEASED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_RELEASED'));",
+                  "console.log('Simulating PAYMENT_RELEASED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Hold released.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6.6 Trip is CANCELLED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is CANCELLED', function () { pm.expect(t.status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 · Idempotency & out-of-order protection",
+      "description": "Kafka is at-least-once. Duplicates (same Debezium `id`) are dropped by the processed_event ledger; stale replies (new id, wrong saga state) are ignored.",
+      "item": [
+        {
+          "name": "7.1 Rider books a ride",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('fixed_event_id');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. ",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.2 ⚙ SIMULATE PAYMENT_HELD (event id X)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = (pm.collectionVariables.get('fixed_event_id') || (function(){var g=pm.variables.replaceIn('{{$guid}}');pm.collectionVariables.set('fixed_event_id', g); return g;})());",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "First delivery.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-1\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.3 ⚙ REPLAY the SAME event (id X again) → duplicate",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = (pm.collectionVariables.get('fixed_event_id') || (function(){var g=pm.variables.replaceIn('{{$guid}}');pm.collectionVariables.set('fixed_event_id', g); return g;})());",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Same `id` header ⇒ skipped by the ledger. Verify exactly ONE MATCH_DRIVER command exists on `outbox.event.matching-command` for this trip.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-1\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.4 ⚙ SEND a NEW PAYMENT_HELD (id Y) → stale/out-of-order",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "New id but the saga already left AWAITING_PAYMENT_HOLD ⇒ logged as 'Ignoring stale/out-of-order' and ignored.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-2\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.5 Trip is still PAYMENT_HELD (nothing double-applied)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is PAYMENT_HELD', function () { pm.expect(t.status).to.eql('PAYMENT_HELD'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "Check the trip-service log for the 'Duplicate event … ignored' and 'Ignoring stale/out-of-order' lines.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "7.6 Cleanup: rider cancels",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/cancel"
+            },
+            "description": "Starts compensation.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"test cleanup\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.7 Cleanup: ⚙ SIMULATE PAYMENT_RELEASED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_RELEASED'));",
+                  "console.log('Simulating PAYMENT_RELEASED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Frees the rider for the next folder.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "7.8 Trip is CANCELLED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is CANCELLED', function () { pm.expect(t.status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 · Rate limiting (sliding window)",
+      "description": "Route `trip-service` allows 20 requests / 10 s per user. Run request 8.1 with the COLLECTION RUNNER: 30 iterations, delay 0 ms. Expect ~20 responses without 429, then 429s until the window slides.",
+      "item": [
+        {
+          "name": "8.1 Hammer a route (run 30× with no delay)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('allowed (200/403) or throttled (429) — never a 5xx', function () { pm.expect([200,403,404,429]).to.include(pm.response.code); });",
+                  "var lim = pm.response.headers.get('X-RateLimit-Limit'), rem = pm.response.headers.get('X-RateLimit-Remaining');",
+                  "console.log('status', pm.response.code, 'limit', lim, 'remaining', rem);",
+                  "if (pm.response.code === 429) { pm.test('429 Too Many Requests', function () { pm.response.to.have.status(429); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "Watch the console: `X-RateLimit-Remaining` counts down 19 → 0, then the status flips to 429. Wait 10 s and it recovers (sliding window, no boundary burst).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9 · Resilience (manual steps interleaved)",
+      "description": "Demonstrates degradation and fail-closed behaviour when location-service is down. Requests named 🛑/▶ are MANUAL: stop or start the location-service process, then continue. Needs rider1 to have NO active trip.",
+      "item": [
+        {
+          "name": "9.1 🛑 MANUAL: stop location-service now (Ctrl-C), then send this",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var cb = pm.response.json().circuitBreakers;",
+                  "pm.test('surgeQuote + driverContext breakers exist', function () { pm.expect(cb).to.have.property('surgeQuote'); pm.expect(cb).to.have.property('driverContext'); });",
+                  "console.log('driverContext =', cb.driverContext.state, ' surgeQuote =', cb.surgeQuote.state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{trip_url}}/actuator/circuitbreakers"
+            },
+            "description": "Baseline: both breakers CLOSED.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9.2 Rider books a ride",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 Accepted (saga continues asynchronously)', function () { pm.response.to.have.status(202); });",
+                  "var t = pm.response.json();",
+                  "pm.collectionVariables.set('trip_id', t.tripId);",
+                  "pm.test('status is REQUESTED', function () { pm.expect(t.status).to.eql('REQUESTED'); });",
+                  "pm.test('fare estimated', function () { pm.expect(Number(t.estimatedFare)).to.be.above(0); });",
+                  "pm.test('surge multiplier >= 1', function () { pm.expect(Number(t.surgeMultiplier)).to.be.at.least(1); });",
+                  "pm.test('Location header points at the trip', function () { pm.expect(pm.response.headers.get('Location')).to.include(t.tripId); });",
+                  "pm.test('surge degraded to neutral 1.0 (fallback used)', function () { pm.expect(Number(pm.response.json().surgeMultiplier)).to.eql(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips"
+            },
+            "description": "Inserts trip + saga_instance + outbox(HOLD_PAYMENT) + outbox(TRIP_REQUESTED) in ONE DB transaction. Returns 202 because payment/matching continue in the background. **location-service is DOWN**: the surge lookup times out/fails and the fallback returns multiplier 1.0, so booking still succeeds (graceful degradation).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pickup\": { \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}} },\n  \"drop\":   { \"lat\": {{drop_lat}}, \"lng\": {{drop_lng}} },\n  \"vehicleType\": \"CAB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.3 ⚙ SIMULATE PAYMENT_HELD",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_HELD'));",
+                  "console.log('Simulating PAYMENT_HELD with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Hold placed.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"holdId\": \"hold-{{$randomInt}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.4 ⚙ SIMULATE DRIVER_MATCHED (driver1)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('DRIVER_MATCHED'));",
+                  "console.log('Simulating DRIVER_MATCHED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.matching/records"
+            },
+            "description": "Trip offered to driver1.\n\nProduces to `outbox.event.matching` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\", \"driverId\": \"{{driver_id}}\", \"etaSeconds\": 120 } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.5 Accept while location-service is down → 403 (FAIL CLOSED) — run 10× in the Runner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('denied because driver context is unavailable', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/accept"
+            },
+            "description": "ABAC cannot prove the driver is near the pickup ⇒ deny. Each call = up to 3 attempts with full-jitter backoff. After enough failed calls the `driverContext` breaker opens and calls fail instantly.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9.6 Breaker state should now be OPEN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var s = pm.response.json().circuitBreakers.driverContext;",
+                  "console.log('driverContext:', JSON.stringify(s));",
+                  "pm.test('driverContext breaker is OPEN (or HALF_OPEN)', function () { pm.expect(['OPEN','HALF_OPEN']).to.include(s.state); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{trip_url}}/actuator/circuitbreakers"
+            },
+            "description": "CLOSED → OPEN after ≥40 % failures over ≥20 recorded calls. `waitDurationInOpenState` = 30 s, then automatic HALF_OPEN.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9.7 ▶ MANUAL: start location-service again, wait ≥30 s, then send this heartbeat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/drivers/me/location"
+            },
+            "description": "Refreshes the driver's read-model entry after the restart (Debezium catches up from the WAL).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"lat\": {{pickup_lat}}, \"lng\": {{pickup_lng}}, \"status\": \"AVAILABLE\", \"vehicleType\": \"CAB\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.8 Accept after recovery → 200 (HALF_OPEN probes succeed → CLOSED)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('DRIVER_ASSIGNED', function () { pm.expect(pm.response.json().status).to.eql('DRIVER_ASSIGNED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/accept"
+            },
+            "description": "If you get 403, the breaker is still OPEN or the read model isn't refreshed yet: wait a few seconds and resend.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driver_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9.9 Breaker back to CLOSED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('driverContext CLOSED or HALF_OPEN', function () { pm.expect(['CLOSED','HALF_OPEN']).to.include(pm.response.json().circuitBreakers.driverContext.state); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{trip_url}}/actuator/circuitbreakers"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "9.10 Cleanup: rider cancels (saga: DRIVER_ASSIGNED → compensate)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}/cancel"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"resilience test cleanup\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.11 Cleanup: ⚙ SIMULATE PAYMENT_RELEASED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('sim_event_id_b64', btoa(id));",
+                  "pm.variables.set('sim_event_type_b64', btoa('PAYMENT_RELEASED'));",
+                  "console.log('Simulating PAYMENT_RELEASED with Debezium-style header id =', id);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Kafka REST accepted the record', function () { pm.response.to.have.status(200); });",
+                  "pm.test('record has an offset', function () { pm.expect(pm.response.json().offset).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{kafka_rest_url}}/v3/clusters/{{kafka_cluster_id}}/topics/outbox.event.payment/records"
+            },
+            "description": "Completes the cancellation.\n\nProduces to `outbox.event.payment` exactly what Debezium's EventRouter would: headers `id` (idempotency key) and `eventType`, key = tripId, value = JSON payload. (Header values are base64 in the Kafka REST v3 API; the pre-request script encodes them.)",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"headers\": [\n    { \"name\": \"id\",        \"value\": \"{{sim_event_id_b64}}\" },\n    { \"name\": \"eventType\", \"value\": \"{{sim_event_type_b64}}\" }\n  ],\n  \"key\":   { \"type\": \"STRING\", \"data\": \"{{trip_id}}\" },\n  \"value\": { \"type\": \"JSON\", \"data\": { \"tripId\": \"{{trip_id}}\" } }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9.12 Trip is CANCELLED",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(function(){}, parseInt(pm.collectionVariables.get('propagation_delay_ms')||'2000'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "var t = pm.response.json();",
+                  "pm.test('trip status is CANCELLED', function () { pm.expect(t.status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 · Gateway circuit breaker (manual)",
+      "description": "Stop trip-service, then run the request below. The gateway's CircuitBreaker filter forwards to the fallback controller.",
+      "item": [
+        {
+          "name": "10.1 🛑 MANUAL: stop trip-service, then GET a trip through the gateway → 503 + Retry-After",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('503 from gateway fallback', function () { pm.response.to.have.status(503); });",
+                  "pm.test('Retry-After header present', function () { pm.expect(pm.response.headers.get('Retry-After')).to.eql('5'); });",
+                  "pm.test('RFC 7807 problem body', function () { pm.expect(pm.response.json().detail).to.include('temporarily unavailable'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/trips/{{trip_id}}"
+            },
+            "description": "GET is retried twice by the gateway Retry filter, then the breaker/fallback answers. POSTs are never retried.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{rider_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "trip_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "location_url",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "kafka_rest_url",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "realm",
+      "value": "ridehail"
+    },
+    {
+      "key": "client_id",
+      "value": "ridehail-app"
+    },
+    {
+      "key": "password",
+      "value": "Passw0rd!"
+    },
+    {
+      "key": "rider_username",
+      "value": "rider1"
+    },
+    {
+      "key": "driver_username",
+      "value": "driver1"
+    },
+    {
+      "key": "driver2_username",
+      "value": "driver2"
+    },
+    {
+      "key": "admin_username",
+      "value": "admin1"
+    },
+    {
+      "key": "pickup_lat",
+      "value": "17.4435"
+    },
+    {
+      "key": "pickup_lng",
+      "value": "78.3772"
+    },
+    {
+      "key": "drop_lat",
+      "value": "17.4239"
+    },
+    {
+      "key": "drop_lng",
+      "value": "78.4738"
+    },
+    {
+      "key": "far_lat",
+      "value": "17.6000"
+    },
+    {
+      "key": "far_lng",
+      "value": "78.6000"
+    },
+    {
+      "key": "propagation_delay_ms",
+      "value": "2000"
+    },
+    {
+      "key": "kafka_cluster_id",
+      "value": ""
+    },
+    {
+      "key": "rider_token",
+      "value": ""
+    },
+    {
+      "key": "rider_id",
+      "value": ""
+    },
+    {
+      "key": "driver_token",
+      "value": ""
+    },
+    {
+      "key": "driver_id",
+      "value": ""
+    },
+    {
+      "key": "driver2_token",
+      "value": ""
+    },
+    {
+      "key": "driver2_id",
+      "value": ""
+    },
+    {
+      "key": "admin_token",
+      "value": ""
+    },
+    {
+      "key": "admin_id",
+      "value": ""
+    },
+    {
+      "key": "trip_id",
+      "value": ""
+    },
+    {
+      "key": "fixed_event_id",
+      "value": ""
+    }
+  ]
+}

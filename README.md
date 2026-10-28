@@ -13,3 +13,7 @@ infra/              Debezium connector JSONs, register script, Kafka topic/comma
 
 Build: `mvn -q clean verify` (JDK 21). Run order: Postgres (wal_level=logical) → Kafka + Kafka Connect → `infra/register-connectors.sh`
 → Redis → services. Required env: `OIDC_ISSUER_URI`, `TRIP_DB_URL`, `LOCATION_DB_URL`, `KAFKA_BOOTSTRAP`, `REDIS_HOST`, `INTERNAL_ALB_URI`.
+
+## Testing
+`postman/` contains the Postman collection, environment and **TESTING_GUIDE.md** (step-by-step).
+`infra/local/` contains a Docker Compose stack (Postgres, Redis, Kafka, Debezium, Kafka REST, Keycloak with seeded users) and scripts to run it.
