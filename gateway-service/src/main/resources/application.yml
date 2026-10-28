@@ -1,0 +1,91 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: api-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}        # ElastiCache (cluster-mode disabled is fine for limiter keys)
+      port: 6379
+      timeout: 100ms                       # limiter must be fast; limiter fails open on error
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Keycloak: https://sso.ridehail.com/realms/ridehail
+          # Cognito : https://cognito-idp.ap-south-1.amazonaws.com/<userPoolId>
+          issuer-uri: ${OIDC_ISSUER_URI:http://localhost:8180/realms/ridehail}
+  cloud:
+    gateway:
+      httpclient:
+        connect-timeout: 1000
+        response-timeout: 5s
+        pool:
+          type: elastic
+          max-idle-time: 30s
+      default-filters:
+        # Never trust identity headers coming from the outside world.
+        - RemoveRequestHeader=X-User-Id
+        - RemoveRequestHeader=X-User-Roles
+      routes:
+        # All routes target the INTERNAL ALB, which does path-based routing to the target groups
+        # (trip-service TG, location-service TG, ...). Gateway -> Internal ALB -> Microservices.
+        - id: trip-service
+          uri: ${INTERNAL_ALB_URI:http://internal-alb.ridehail.local}
+          predicates:
+            - Path=/api/v1/trips/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@slidingWindowRateLimiter}"
+                key-resolver: "#{@userKeyResolver}"
+                sliding-window-rate-limiter.limit: 20
+                sliding-window-rate-limiter.windowSeconds: 10
+                status-code: TOO_MANY_REQUESTS
+            - name: CircuitBreaker
+              args:
+                name: tripServiceCb
+                fallbackUri: forward:/fallback/trips
+                statusCodes: 500,502,503,504
+            # Retry ONLY idempotent reads. Retrying POST /trips could double-book.
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET
+                series: SERVER_ERROR
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+
+        - id: driver-location
+          uri: ${INTERNAL_ALB_URI:http://internal-alb.ridehail.local}
+          predicates:
+            - Path=/api/v1/drivers/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@slidingWindowRateLimiter}"
+                key-resolver: "#{@userKeyResolver}"
+                # Drivers ping every ~3-4s; allow some headroom, block runaway clients.
+                sliding-window-rate-limiter.limit: 10
+                sliding-window-rate-limiter.windowSeconds: 10
+            - name: CircuitBreaker
+              args:
+                name: locationServiceCb
+                fallbackUri: forward:/fallback/location
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true

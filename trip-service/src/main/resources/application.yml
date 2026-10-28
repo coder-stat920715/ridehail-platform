@@ -1,0 +1,142 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: trip-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${TRIP_DB_URL:jdbc:postgresql://localhost:5432/tripdb}
+    username: ${TRIP_DB_USER:trip}
+    password: ${TRIP_DB_PASSWORD:trip}
+    hikari:
+      maximum-pool-size: 30        # with virtual threads the pool, not threads, is the concurrency limit
+      connection-timeout: 2000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none               # schema owned by Flyway (jsonb column would fail Hibernate validation)
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER_URI:http://localhost:8180/realms/ridehail}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:                      # only used for dead-letter publishing; business events go via outbox+Debezium
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: trip-saga
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      isolation-level: read_committed
+      max-poll-records: 100
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
+
+ridehail:
+  topics:
+    payment-events: outbox.event.payment      # produced by payment-service's outbox via Debezium
+    matching-events: outbox.event.matching    # produced by matching-service's outbox via Debezium
+  clients:
+    location:
+      base-url: ${LOCATION_SERVICE_URL:http://internal-alb.ridehail.local}
+
+# ======================= Resilience4j =======================
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 50                       # last 50 calls
+        minimumNumberOfCalls: 20                    # don't judge on a tiny sample
+        failureRateThreshold: 50                    # >=50% failures  -> CLOSED -> OPEN
+        slowCallDurationThreshold: 1s
+        slowCallRateThreshold: 80                   # >=80% slow calls -> OPEN as well
+        waitDurationInOpenState: 20s                # stay OPEN this long ...
+        automaticTransitionFromOpenToHalfOpenEnabled: true   # ... then OPEN -> HALF_OPEN automatically
+        permittedNumberOfCallsInHalfOpenState: 5    # probe calls; all good -> CLOSED, else back to OPEN
+        maxWaitDurationInHalfOpenState: 10s
+        recordExceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+        ignoreExceptions:
+          - org.springframework.web.client.HttpClientErrorException   # 4xx = caller/business problem
+    instances:
+      surgeQuote:
+        baseConfig: default
+        slidingWindowSize: 100
+        waitDurationInOpenState: 10s                # pricing is non-critical: probe sooner
+      driverContext:
+        baseConfig: default
+        failureRateThreshold: 40                    # authz path: trip earlier
+        waitDurationInOpenState: 30s
+
+  retry:
+    configs:
+      default:
+        maxAttempts: 3
+        waitDuration: 100ms                         # base interval
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2             # 100ms, 200ms, 400ms ...
+        enableRandomizedWait: true                  # built-in jitter (+/- factor)
+        randomizedWaitFactor: 0.5
+        retryExceptions:
+          - java.io.IOException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+        ignoreExceptions:
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException   # never hammer an OPEN breaker
+          - org.springframework.web.client.HttpClientErrorException
+    instances:
+      driverContext:
+        baseConfig: default
+        maxAttempts: 3
+        # Backoff for this instance is FULL JITTER: random(0, min(2s, 100ms * 2^(n-1))),
+        # applied by ResilienceConfig#driverContextRetryCustomizer (overrides the interval above).
+
+  bulkhead:
+    instances:
+      surgeQuote:
+        maxConcurrentCalls: 100                     # semaphore bulkhead (ideal with virtual threads)
+        maxWaitDuration: 0                          # fail fast when full
+
+  timelimiter:
+    instances:
+      surgeQuote:
+        timeoutDuration: 800ms                      # hard deadline; fallback = neutral surge
+        cancelRunningFuture: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,circuitbreakers,retries,bulkheads
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    circuitbreakers:
+      enabled: true
