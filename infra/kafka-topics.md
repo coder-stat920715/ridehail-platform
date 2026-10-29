@@ -10,11 +10,13 @@ with the same partition count (dead-letter publishing keeps the original partiti
 | outbox.event.matching-command | trip-service saga (`matching-command`) | tripId | matching-service | 24 |
 | outbox.event.payment | payment-service (`payment`) | tripId | trip-service saga | 24 |
 | outbox.event.matching | matching-service (`matching`) | tripId | trip-service saga | 24 |
+
+Also consumed: `outbox.event.trip` by **matching-service** (DRIVER_ASSIGNED / TRIP_COMPLETED / TRIP_CANCELLED → reservation lifecycle) and **notification-service** (all lifecycle events → inbox/push/SMS).
 | outbox.event.driver-location | location-service (`driver-location`) | driverId | location query projector, matching | 48 |
 
 Headers added by Debezium EventRouter: `id` (outbox row UUID -> idempotency key), `eventType`.
 
-## Participant contract (payment-service / matching-service are not included in this repo)
+## Participant contract (payment-service, matching-service and notification-service are all implemented in this repo)
 
 | Command (topic) | Reply event types (topic) | Reply payload |
 |---|---|---|

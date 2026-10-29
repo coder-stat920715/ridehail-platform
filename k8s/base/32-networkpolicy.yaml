@@ -1,0 +1,64 @@
+# Zero-trust networking inside the namespace (needs a policy engine: VPC CNI network policy or Calico).
+# 1) deny all ingress, 2) re-open only the flows the architecture needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: ridehail }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# ALB -> api-gateway pods (pod IPs inside the VPC)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-alb-to-gateway, namespace: ridehail }
+spec:
+  podSelector: { matchLabels: { app: api-gateway } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 10.0.0.0/16 } }]      # = vpc_cidr in Terraform
+      ports: [{ port: 8080 }]
+---
+# api-gateway -> business services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-gateway-to-services, namespace: ridehail }
+spec:
+  podSelector:
+    matchExpressions: [{ key: app, operator: In, values: [trip-service, location-service, notification-service] }]
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api-gateway } } }]
+---
+# trip-service (surge + driver context) and matching-service (nearby driver search) -> location-service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-trip-to-location, namespace: ridehail }
+spec:
+  podSelector: { matchLabels: { app: location-service } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: trip-service } }
+        - podSelector: { matchLabels: { app: matching-service } }
+---
+# every service registers with / queries Eureka; Eureka peers talk to each other
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-namespace-to-eureka, namespace: ridehail }
+spec:
+  podSelector: { matchLabels: { app: eureka-server } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: {} }]
+      ports: [{ port: 8761 }]
+---
+# Jobs (register-connectors) -> Debezium Connect REST
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-jobs-to-connect, namespace: ridehail }
+spec:
+  podSelector: { matchLabels: { app: debezium-connect } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: {} }]
+      ports: [{ port: 8083 }]

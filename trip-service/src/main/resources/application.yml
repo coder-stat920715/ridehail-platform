@@ -58,7 +58,7 @@ ridehail:
     matching-events: outbox.event.matching    # produced by matching-service's outbox via Debezium
   clients:
     location:
-      base-url: ${LOCATION_SERVICE_URL:http://internal-alb.ridehail.local}
+      base-url: ${LOCATION_SERVICE_URL:http://location-service}   # logical Eureka name, not a host
 
 # ======================= Resilience4j =======================
 resilience4j:
@@ -140,3 +140,13 @@ management:
   health:
     circuitbreakers:
       enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    registry-fetch-interval-seconds: 10          # how fast clients notice new/removed instances
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10        # heartbeat
+    lease-expiration-duration-in-seconds: 30     # evicted after 3 missed heartbeats

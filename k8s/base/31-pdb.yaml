@@ -1,0 +1,35 @@
+# PodDisruptionBudgets: voluntary disruptions (node drain, cluster upgrade) can never take all replicas down.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: api-gateway, namespace: ridehail }
+spec: { minAvailable: 2, selector: { matchLabels: { app: api-gateway } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: trip-service, namespace: ridehail }
+spec: { minAvailable: 2, selector: { matchLabels: { app: trip-service } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: location-service, namespace: ridehail }
+spec: { minAvailable: 2, selector: { matchLabels: { app: location-service } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: payment-service, namespace: ridehail }
+spec: { minAvailable: 1, selector: { matchLabels: { app: payment-service } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: eureka-server, namespace: ridehail }
+spec: { minAvailable: 1, selector: { matchLabels: { app: eureka-server } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: matching-service, namespace: ridehail }
+spec: { minAvailable: 1, selector: { matchLabels: { app: matching-service } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: notification-service, namespace: ridehail }
+spec: { minAvailable: 1, selector: { matchLabels: { app: notification-service } } }

@@ -58,7 +58,7 @@ public class BookingSagaOrchestrator {
     @Transactional(propagation = Propagation.MANDATORY)
     public void start(TripEntity trip) {
         sagas.save(SagaInstanceEntity.begin(trip.getId()));
-        execute(new SagaCommand.HoldPayment(trip.getId(), trip.getRiderId(), trip.getEstimatedFare()), trip);
+        execute(new SagaCommand.HoldPayment(trip.getId(), trip.getRiderId(), trip.getRiderName(), trip.getEstimatedFare()), trip);
         emit(new TripEvent.TripRequested(trip.getId(), trip.getRiderId(), trip.pickup(), trip.drop(),
                 trip.getVehicleType(), trip.getEstimatedFare(), trip.getSurgeMultiplier()));
     }

@@ -4,7 +4,7 @@ Files in this folder
 
 | File | Purpose |
 |---|---|
-| `Ridehail.postman_collection.json` | 85 requests in 11 folders, each with automated assertions |
+| `Ridehail.postman_collection.json` | 123 requests in 13 folders, each with automated assertions |
 | `Ridehail-Local.postman_environment.json` | Local URLs, test users, coordinates |
 
 The collection needs a running stack. `infra/local/` contains a Docker Compose file with everything except the three Spring Boot services.
@@ -41,35 +41,47 @@ Keycloak imports realm **`ridehail`** automatically (client `ridehail-app`, pass
 | User | Role |
 |---|---|
 | rider1, rider2 | RIDER |
+| FAIL_rider | RIDER (name starts with FAIL → payment declined) |
+| CAPFAIL_rider | RIDER (name starts with CAPFAIL → capture rejected) |
 | driver1, driver2 | DRIVER |
 | admin1 | ADMIN |
 
 Wait ~30 s, then check `http://localhost:8180/realms/ridehail/.well-known/openid-configuration` returns JSON.
 
-### 2.3 Build and start the services (3 terminals)
+### 2.3 Build, then start the services IN THIS ORDER (one terminal each)
 ```bash
-mvn -q -DskipTests install                       # repo root, builds all modules
-
-# terminal 1 – location-service (creates its tables via Flyway)
-mvn -pl location-service spring-boot:run
-
-# terminal 2 – trip-service
-LOCATION_SERVICE_URL=http://localhost:8082 mvn -pl trip-service spring-boot:run
+mvn -q -DskipTests install          # repo root: builds every module once
 ```
-Defaults already match the local stack (DB `trip/trip`, `location/location`, Kafka `localhost:9092`, issuer `http://localhost:8180/realms/ridehail`).
+| # | Service | Command | Why in this position |
+|---|---|---|---|
+| 1 | **eureka-server** :8761 | `mvn -pl eureka-server spring-boot:run` | Registry first: everyone else registers with it and resolves peers through it. Check http://localhost:8761 |
+| 2 | **location-service** :8082 | `mvn -pl location-service spring-boot:run` | A dependency of trip-service (surge + driver context); creates its DB tables (Flyway) |
+| 3 | **trip-service** :8081 | `mvn -pl trip-service spring-boot:run` | Needs Eureka (to find `location-service`), Kafka, DB; creates its tables |
+| 4 | **payment-service** :8084 *(Mode B/C)* | `mvn -pl payment-service spring-boot:run` | Saga participant; creates its tables |
+| 4b | **matching-service** :8085 *(Mode C)* | `mvn -pl matching-service spring-boot:run` | Needs Eureka (finds `location-service`) and Kafka; creates its tables |
+| 4c | **notification-service** :8086 *(Mode C)* | `mvn -pl notification-service spring-boot:run` | Pure consumer of `outbox.event.trip`; creates its tables |
+| 5 | *(register Debezium, see 2.4)* | | Needs the `outbox` tables from steps 2–4 |
+| 6 | **gateway-service** :8080 | `mvn -pl gateway-service spring-boot:run` | Last: routes `lb://trip-service` / `lb://location-service` only work once they are registered |
+
+Open http://localhost:8761: you should see `LOCATION-SERVICE`, `TRIP-SERVICE` (`PAYMENT-SERVICE`, `GATEWAY-SERVICE` once started) as UP.
+Defaults already match the local stack (DB users `trip/trip`, `location/location`, `payment/payment`; Kafka `localhost:9092`; Keycloak issuer `http://localhost:8180/realms/ridehail`; Eureka `http://localhost:8761/eureka/`).
 
 ### 2.4 Register the Debezium connectors
-Only **after** both services started once (Flyway creates the `outbox` tables):
+Only **after** the services of steps 2–4 started once (Flyway creates the `outbox` tables):
 ```bash
-infra/local/register-local.sh
+infra/local/register-local.sh                      # all four (trip, location, payment, matching)
+infra/local/register-local.sh trip location        # Mode A (payment-service not running)
 ```
-Expected last lines: `trip-outbox-connector RUNNING ['RUNNING']` and the same for `location-outbox-connector`.
+Expected: `trip-outbox-connector RUNNING ['RUNNING']` (and location / payment).
 
-### 2.5 Start the gateway (terminal 3)
-```bash
-SPRING_PROFILES_ACTIVE=local mvn -pl gateway-service spring-boot:run
-```
-The `local` profile routes straight to `localhost:8081/8082` (no ALB locally).
+### 2.5 Two test modes
+| Mode | payment-service | Folders to run | Payment replies come from |
+|---|---|---|---|
+| **A – simulated participants** | not running | 0 → 8 (then 9, 10 manually) | Postman "⚙ SIMULATE" requests |
+| **B – real payment-service** | running + connector registered; **matching-service must NOT run** | 0, 1, 2, then **11** | the real service (FAIL / CAPFAIL rules); matching still simulated |
+| **C – everything real** | payment, matching and notification services running; trip/location/payment/matching connectors registered | 0, 1, 2, then **12** | real services only (real driver search + reservation, offer expiry, notification inbox) |
+
+Do not mix: with a real payment-service running, simulated payment replies arrive *after* the real ones and are (correctly) ignored as stale, so folders 4–6 would fail their assertions.
 
 ### 2.6 Import into Postman
 1. *Import* → both JSON files.
@@ -240,6 +252,7 @@ Stop `trip-service`, send 10.1 → **503** with `Retry-After: 5` and an RFC 7807
 
 | Symptom | Likely cause / fix |
 |---|---|
+| Gateway returns 503 / `Unable to find instance for trip-service` | Eureka not running or the service hasn't registered yet (check http://localhost:8761; wait ~10 s after start). |
 | Every call 401 from the services | `OIDC_ISSUER_URI` must equal the token's `iss` exactly (`http://localhost:8180/realms/ridehail`). Get tokens via `localhost:8180`, not `127.0.0.1` or a container name. |
 | 2.3 returns `[]` | Connector not `RUNNING` (`curl localhost:8083/connectors/location-outbox-connector/status`), or raise `propagation_delay_ms`. |
 | Connector fails with unknown `snapshot.mode` | Your Debezium is < 2.7: change `no_data` → `schema_only` in `infra/local/*.local.json` and re-register. |
@@ -267,3 +280,18 @@ docker compose exec redis redis-cli FLUSHALL        # drops the limiter keys and
 * The project was **not compiled or executed** while this collection was written (no Maven Central access in the authoring environment). Treat a first failing assertion as a possible code or config bug, not necessarily a test bug; the Troubleshooting table lists the likeliest causes.
 * Surge depends on live demand/supply, so assertions only check the range [1, 3], and the final-fare assertion multiplies by the returned multiplier.
 * `infra/local/*` is for local testing only (superuser Debezium role, plain-text Kafka, Keycloak dev mode).
+
+
+---
+## 7. Mode C extras (matching-service + notification-service)
+
+**Extra verification (from `infra/local`)**
+```bash
+# driver reservations / match outcomes
+docker compose exec postgres psql -U postgres -d matchingdb -c "select trip_id,state,driver_id,distance_km,eta_seconds,searched_radius_km,failure_reason from match_request order by created_at desc limit 5;"
+# notifications produced for each user
+docker compose exec postgres psql -U postgres -d notificationdb -c "select user_id,type,title,read_at from notifications order by created_at desc limit 10;"
+# simulated push/SMS deliveries appear in the notification-service log as [PUSH ] and [SMS  ] lines
+```
+**Speed up the offer-expiry test:** start matching-service with `OFFER_TIMEOUT_SECONDS=20` and lower the 70 s delay of request 12.20.
+**Common Mode C problems:** trip stuck in `PAYMENT_HELD` ⇒ matching connector not registered or no driver ping in the last 30 s (re-run 12.1 right before booking); matching log shows `Connection refused` to location-service ⇒ location-service not registered in Eureka; Kafka retries it for ~45 s and then dead-letters to `outbox.event.matching-command.DLT`.

@@ -1,0 +1,20 @@
+# Non-secret settings shared by all services. Values here are PLACEHOLDERS: fill them from `terraform output`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ridehail-config
+  namespace: ridehail
+data:
+  EUREKA_URL: "http://eureka-server-0.eureka-server:8761/eureka/,http://eureka-server-1.eureka-server:8761/eureka/"
+  OIDC_ISSUER_URI: "https://REPLACE_ME_cognito-or-keycloak/issuer"
+  KAFKA_BOOTSTRAP: "REPLACE_ME_msk_bootstrap_brokers_tls"
+  REDIS_HOST_LIMITER: "REPLACE_ME_redis_limiter_endpoint"
+  REDIS_HOST_GEO: "REPLACE_ME_redis_geo_endpoint"
+  TRIP_DB_URL: "jdbc:postgresql://REPLACE_ME_trip_rds_endpoint:5432/tripdb"
+  LOCATION_DB_URL: "jdbc:postgresql://REPLACE_ME_location_rds_endpoint:5432/locationdb"
+  PAYMENT_DB_URL: "jdbc:postgresql://REPLACE_ME_payment_rds_endpoint:5432/paymentdb"
+  MATCHING_DB_URL: "jdbc:postgresql://REPLACE_ME_matching_rds_endpoint:5432/matchingdb"
+  NOTIFICATION_DB_URL: "jdbc:postgresql://REPLACE_ME_notification_rds_endpoint:5432/notificationdb"
+  # MSK (TLS) and ElastiCache (in-transit encryption) need TLS clients:
+  SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: "SSL"
+  SPRING_DATA_REDIS_SSL_ENABLED: "true"

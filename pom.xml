@@ -24,9 +24,13 @@
   <modules>
     <module>common-outbox</module>
     <module>common-security</module>
+    <module>eureka-server</module>
     <module>gateway-service</module>
     <module>trip-service</module>
     <module>location-service</module>
+    <module>payment-service</module>
+    <module>matching-service</module>
+    <module>notification-service</module>
   </modules>
 
   <dependencyManagement>

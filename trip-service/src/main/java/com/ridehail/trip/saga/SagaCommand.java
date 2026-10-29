@@ -16,7 +16,7 @@ public sealed interface SagaCommand {
     String commandType();
     String aggregateType();
 
-    record HoldPayment(UUID tripId, String riderId, BigDecimal amount) implements SagaCommand {
+    record HoldPayment(UUID tripId, String riderId, String riderName, BigDecimal amount) implements SagaCommand {
         public String commandType() { return "HOLD_PAYMENT"; }
         public String aggregateType() { return "payment-command"; }
     }

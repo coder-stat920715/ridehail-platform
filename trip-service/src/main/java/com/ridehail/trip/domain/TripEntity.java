@@ -23,6 +23,9 @@ public class TripEntity {
     @Column(nullable = false)
     private String riderId;
 
+    /** Display/user name (JWT preferred_username). The simulated payment gateway declines names starting with FAIL. */
+    private String riderName;
+
     private String driverId;
 
     private double pickupLat;
@@ -55,11 +58,12 @@ public class TripEntity {
 
     protected TripEntity() { }
 
-    public static TripEntity request(String riderId, GeoPoint pickup, GeoPoint drop, VehicleType vehicleType,
+    public static TripEntity request(String riderId, String riderName, GeoPoint pickup, GeoPoint drop, VehicleType vehicleType,
                                      BigDecimal estimatedFare, BigDecimal surge) {
         var t = new TripEntity();
         t.id = UUID.randomUUID();
         t.riderId = riderId;
+        t.riderName = riderName;
         t.pickupLat = pickup.lat();
         t.pickupLng = pickup.lng();
         t.dropLat = drop.lat();
@@ -98,6 +102,7 @@ public class TripEntity {
 
     public UUID getId() { return id; }
     public String getRiderId() { return riderId; }
+    public String getRiderName() { return riderName; }
     public String getDriverId() { return driverId; }
     public VehicleType getVehicleType() { return vehicleType; }
     public TripStatus getStatus() { return status; }

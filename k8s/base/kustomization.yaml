@@ -1,0 +1,30 @@
+# Kustomize entry point of the BASE layer. `kubectl apply -k k8s/overlays/dev` = base + dev patches.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ridehail
+resources:
+  - 00-namespace.yaml
+  - 10-configmap.yaml
+  - 20-eureka-server.yaml
+  - 21-api-gateway.yaml
+  - 22-trip-service.yaml
+  - 23-location-service.yaml
+  - 24-payment-service.yaml
+  - 25-debezium-connect.yaml
+  - 26-matching-service.yaml
+  - 27-notification-service.yaml
+  - 30-hpa.yaml
+  - 31-pdb.yaml
+  - 32-networkpolicy.yaml
+  - 33-targetgroupbinding.yaml
+  - 40-job-create-topics.yaml
+  - 41-job-register-connectors.yaml
+configMapGenerator:
+  - name: debezium-connectors
+    files:
+      - connectors/trip-outbox.json
+      - connectors/location-outbox.json
+      - connectors/payment-outbox.json
+      - connectors/matching-outbox.json
+generatorOptions:
+  disableNameSuffixHash: true

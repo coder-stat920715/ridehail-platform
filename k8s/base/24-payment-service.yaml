@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment-service
+  namespace: ridehail
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: ridehail
+  labels: { app: payment-service }
+spec:
+  selector: { app: payment-service }
+  ports:
+    - { name: http, port: 8084, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: ridehail
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }     # never drop below desired capacity during a rollout
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      serviceAccountName: payment-service
+      terminationGracePeriodSeconds: 40
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      topologySpreadConstraints:                         # spread replicas across AZs
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: payment-service } }
+      containers:
+        - name: payment-service
+          image: ridehail/payment-service:latest                   # replaced by kustomize `images:` in the overlay
+          ports: [{ name: http, containerPort: 8084 }]
+          env:
+            - name: EUREKA_URL
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: EUREKA_URL } }
+            - name: KAFKA_BOOTSTRAP
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: KAFKA_BOOTSTRAP } }
+            - name: PAYMENT_DB_URL
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: PAYMENT_DB_URL } }
+            - name: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL } }
+            - name: PAYMENT_DB_USER
+              valueFrom: { secretKeyRef: { name: ridehail-db-credentials, key: PAYMENT_DB_USER } }
+            - name: PAYMENT_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: ridehail-db-credentials, key: PAYMENT_DB_PASSWORD } }
+          startupProbe:                                   # JVM + Flyway + Eureka registration can take a while
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:                                 # in/out of the load balancer
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+          livenessProbe:                                  # restart if wedged
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+          lifecycle:
+            preStop:                                      # give Eureka/ALB time to stop routing here before SIGTERM
+              exec: { command: ["sleep", "10"] }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]

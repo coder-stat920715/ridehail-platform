@@ -1,0 +1,8 @@
+.idea/
+*.iml
+**/target/
+.terraform/
+*.tfstate*
+terraform.tfvars
+backend.hcl
+.DS_Store

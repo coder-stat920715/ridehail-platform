@@ -13,7 +13,7 @@ flowchart LR
   EALB --> GW["Spring Cloud Gateway<br/>JWT validation, RBAC,<br/>sliding-window limiter, breaker"]
   GW <--> RL[("Redis<br/>rate limit")]
   GW -. JWKS .-> IDP["Keycloak / Cognito<br/>OIDC"]
-  GW --> IALB["Internal ALB<br/>path-based routing"]
+  GW -. "lookup" .-> EUR["Eureka<br/>service discovery"]
 
   subgraph SVC["Microservices (ECS/EKS, private subnets)"]
     TRIP["trip-service<br/>saga orchestrator + ABAC"]
@@ -23,9 +23,9 @@ flowchart LR
     PAY["payment-service"]
     NOTIF["notification-service"]
   end
-  IALB --> TRIP
-  IALB --> LOCC
-  IALB --> LOCQ
+  GW -- "lb://" --> TRIP
+  GW -- "lb://" --> LOCC
+  GW -- "lb://" --> LOCQ
 
   TRIP --> TDB[("PostgreSQL<br/>trips, saga, outbox")]
   LOCC --> LDB[("PostgreSQL<br/>driver_location, outbox")]
@@ -56,8 +56,8 @@ Edge settings:
 | **api-gateway** | Redis (limiter) | TLS-offloaded ingress, JWT validation, RBAC by route, rate limiting, circuit-breaking, `/internal/**` blocked | – |
 | **trip-service** *(implemented)* | PostgreSQL (`trips`, `saga_instance`, `outbox`) | Trip aggregate, booking saga orchestration, ABAC for trip actions, fare estimate | `TRIP_REQUESTED/DRIVER_OFFERED/DRIVER_ASSIGNED/TRIP_STARTED/TRIP_COMPLETED/TRIP_CANCELLED`, `HOLD_PAYMENT/CAPTURE_PAYMENT/RELEASE_PAYMENT_HOLD/MATCH_DRIVER/CANCEL_MATCH` → `PAYMENT_*`, `DRIVER_MATCH*` |
 | **location-service** *(implemented)* | PostgreSQL (write) + Redis GEO (read) | CQRS: driver pings (command), nearest-driver search, driver context, surge | `DRIVER_LOCATION_UPDATED` → itself (projector) |
-| **matching-service** *(contract only)* | PostgreSQL + Redis | Candidate selection, offer/accept/timeout loop, ranking by ETA | `DRIVER_MATCHED/DRIVER_MATCH_FAILED` → `MATCH_DRIVER`, `CANCEL_MATCH` |
-| **payment-service** *(contract only)* | PostgreSQL | Wallet/PSP integration, hold → capture/release, idempotent by `id` header | `PAYMENT_HELD/HOLD_FAILED/RELEASED/CAPTURED/CAPTURE_FAILED` → `HOLD_PAYMENT`, `RELEASE_PAYMENT_HOLD`, `CAPTURE_PAYMENT` |
+| **matching-service** *(implemented)* | PostgreSQL + Redis | Candidate selection, offer/accept/timeout loop, ranking by ETA | `DRIVER_MATCHED/DRIVER_MATCH_FAILED` → `MATCH_DRIVER`, `CANCEL_MATCH` |
+| **payment-service** *(implemented; simulated PSP)* | PostgreSQL | Wallet/PSP integration, hold → capture/release, idempotent by `id` header | `PAYMENT_HELD/HOLD_FAILED/RELEASED/CAPTURED/CAPTURE_FAILED` → `HOLD_PAYMENT`, `RELEASE_PAYMENT_HOLD`, `CAPTURE_PAYMENT` |
 | **pricing-service** *(future)* | Redis/Postgres | Surge today lives in location-service query side; extract when ML forecasting arrives | `SURGE_UPDATED` |
 | **notification-service** *(contract only)* | DynamoDB | Push/SMS/WhatsApp fan-out | → `outbox.event.trip` |
 | **identity** | Keycloak DB / Cognito | OIDC, users, roles (`RIDER`, `DRIVER`, `ADMIN`) | – |
@@ -139,9 +139,9 @@ Retry: `random(0, min(2 s, 100 ms · 2^(n-1)))` (full jitter). Never retry `Call
 ## 7. Known limitations / what to harden next
 
 1. **Write amplification of pings through Postgres + outbox** is the first bottleneck (see `LocationCommandService` note). Move raw pings straight to Kafka, keep the outbox for business state.
-2. Internal `/internal/**` APIs rely on network isolation; add mTLS or client-credentials JWTs.
-3. `payment-service`, `matching-service`, `notification-service` are specified by contract only (`infra/kafka-topics.md`).
-4. Offer timeout/redispatch lives in matching-service; trip-service only reacts to `DRIVER_MATCHED/FAILED`.
+2. Internal `/internal/**` APIs rely on network isolation (NetworkPolicy); add mesh mTLS (`k8s/mesh`) or client-credentials JWTs.
+3. `payment-service`, `matching-service` and `notification-service` are implemented, but the PSP and the push/SMS providers are simulated and matching is greedy (no re-dispatch after a decline).
+4. Offer timeout lives in matching-service (60 s); trip-service only reacts to `DRIVER_MATCHED/FAILED`. Re-dispatch to a second driver after a decline would require a new saga step.
 5. Add Testcontainers integration tests (Postgres + Kafka + Debezium) for the saga paths, plus a reconciliation job for sagas stuck in `AWAITING_*`.
 6. Redis hot key → shard geo keys by city/H3 prefix at multi-city scale.
 7. This code was written against Spring Boot 3.3.5 / Spring Cloud 2023.0.3 / Resilience4j 2.2.0 and has **not been compiled in this environment** (no Maven Central access). Expect to fix small API drift when you first build.

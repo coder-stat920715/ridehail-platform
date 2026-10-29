@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: eureka-server            # HEADLESS: DNS returns pod IPs; eureka-server-0.eureka-server resolves to one pod
+  namespace: ridehail
+  labels: { app: eureka-server }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true  # peers must find each other BEFORE they are Ready (bootstrap)
+  selector: { app: eureka-server }
+  ports:
+    - { name: http, port: 8761, targetPort: 8761 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: eureka-server
+  namespace: ridehail
+spec:
+  serviceName: eureka-server
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: eureka-server }
+  template:
+    metadata:
+      labels: { app: eureka-server }
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: eureka-server
+          image: ridehail/eureka-server:latest       # replaced per environment by kustomize `images:`
+          ports: [{ name: http, containerPort: 8761 }]
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: EUREKA_HOSTNAME
+              value: "$(POD_NAME).eureka-server"      # unique stable DNS name per peer
+            - name: EUREKA_PEER_MODE
+              value: "true"                           # register with / replicate to the other peer
+            - name: EUREKA_PEERS
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: EUREKA_URL } }
+            - name: EUREKA_SELF_PRESERVATION
+              value: "true"
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            initialDelaySeconds: 40
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 200m, memory: 384Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]

@@ -42,14 +42,14 @@ public class TripCommandService {
         this.tx = tx;
     }
 
-    public TripResponse bookRide(String riderId, BookRideRequest req) {
+    public TripResponse bookRide(String riderId, String riderName, BookRideRequest req) {
         if (trips.existsByRiderIdAndStatusIn(riderId, ACTIVE)) {
             throw new IllegalTripStateException("Rider already has an active trip");
         }
         var quote = fares.estimate(req.pickup(), req.drop(), req.vehicleType());   // no tx open here
 
         return tx.execute(status -> {
-            TripEntity trip = trips.save(TripEntity.request(riderId, req.pickup(), req.drop(),
+            TripEntity trip = trips.save(TripEntity.request(riderId, riderName, req.pickup(), req.drop(),
                     req.vehicleType(), quote.fare(), quote.surge()));
             saga.start(trip);                                                       // + outbox rows, same commit
             return TripResponse.from(trip);

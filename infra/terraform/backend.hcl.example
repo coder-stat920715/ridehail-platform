@@ -1,0 +1,5 @@
+bucket         = "my-company-tfstate"
+key            = "ridehail/dev/terraform.tfstate"
+region         = "ap-south-1"
+dynamodb_table = "tfstate-lock"
+encrypt        = true

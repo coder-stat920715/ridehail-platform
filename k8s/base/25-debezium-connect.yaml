@@ -1,0 +1,48 @@
+# Kafka Connect worker running the Debezium PostgreSQL connector. It tails the WAL of the 3 databases and
+# publishes outbox rows to Kafka (EventRouter). Connectors themselves are registered by the Job in 41-*.
+apiVersion: v1
+kind: Service
+metadata:
+  name: debezium-connect
+  namespace: ridehail
+spec:
+  selector: { app: debezium-connect }
+  ports: [{ name: http, port: 8083, targetPort: 8083 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debezium-connect
+  namespace: ridehail
+spec:
+  replicas: 1          # connector tasks are rebalanced across workers; 2+ gives failover
+  selector:
+    matchLabels: { app: debezium-connect }
+  template:
+    metadata:
+      labels: { app: debezium-connect }
+    spec:
+      containers:
+        - name: connect
+          image: quay.io/debezium/connect:2.7
+          ports: [{ containerPort: 8083 }]
+          env:
+            - name: BOOTSTRAP_SERVERS
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: KAFKA_BOOTSTRAP } }
+            - { name: GROUP_ID, value: ridehail-connect }
+            - { name: CONFIG_STORAGE_TOPIC, value: connect_configs }
+            - { name: OFFSET_STORAGE_TOPIC, value: connect_offsets }
+            - { name: STATUS_STORAGE_TOPIC, value: connect_statuses }
+            - { name: CONFIG_STORAGE_REPLICATION_FACTOR, value: "3" }
+            - { name: OFFSET_STORAGE_REPLICATION_FACTOR, value: "3" }
+            - { name: STATUS_STORAGE_REPLICATION_FACTOR, value: "3" }
+            - { name: CONNECT_SECURITY_PROTOCOL, value: SSL }
+            - { name: CONNECT_PRODUCER_SECURITY_PROTOCOL, value: SSL }
+            - { name: CONNECT_CONSUMER_SECURITY_PROTOCOL, value: SSL }
+          readinessProbe:
+            httpGet: { path: /connectors, port: 8083 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { memory: 1536Mi }

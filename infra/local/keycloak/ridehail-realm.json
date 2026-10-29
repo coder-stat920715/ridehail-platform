@@ -1,0 +1,162 @@
+{
+  "realm": "ridehail",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 3600,
+  "roles": {
+    "realm": [
+      {
+        "name": "RIDER"
+      },
+      {
+        "name": "DRIVER"
+      },
+      {
+        "name": "ADMIN"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "ridehail-app",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": false,
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "rider1",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "rider1@ridehail.test",
+      "firstName": "Rider1",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RIDER"
+      ]
+    },
+    {
+      "username": "rider2",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "rider2@ridehail.test",
+      "firstName": "Rider2",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RIDER"
+      ]
+    },
+    {
+      "username": "driver1",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "driver1@ridehail.test",
+      "firstName": "Driver1",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "DRIVER"
+      ]
+    },
+    {
+      "username": "driver2",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "driver2@ridehail.test",
+      "firstName": "Driver2",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "DRIVER"
+      ]
+    },
+    {
+      "username": "admin1",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin1@ridehail.test",
+      "firstName": "Admin1",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "ADMIN"
+      ]
+    },
+    {
+      "username": "FAIL_rider",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "fail_rider@ridehail.test",
+      "firstName": "FAIL_rider",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RIDER"
+      ]
+    },
+    {
+      "username": "CAPFAIL_rider",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "capfail_rider@ridehail.test",
+      "firstName": "CAPFAIL_rider",
+      "lastName": "Test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RIDER"
+      ]
+    }
+  ]
+}

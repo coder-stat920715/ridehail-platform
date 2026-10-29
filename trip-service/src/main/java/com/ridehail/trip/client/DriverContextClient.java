@@ -14,7 +14,8 @@ import java.util.Optional;
  * Reads a driver's availability + last known location from the location read-model (used by ABAC).
  *
  * Aspect order is Retry( CircuitBreaker( call ) ): each attempt is recorded by the breaker, and
- * once the breaker is OPEN, CallNotPermittedException is NOT retried (see retry ignore-exceptions).
+ * once the breaker is OPEN, CallNotPermittedException is NOT retried (see retry ignore-exceptions)
+ * and goes straight to the fail-closed fallback.
  * Retries use FULL JITTER backoff (see ResilienceConfig) to avoid synchronised retry storms.
  *
  * The fallback FAILS CLOSED: if we can't prove the driver is near the pickup, the answer is
@@ -30,8 +31,10 @@ public class DriverContextClient {
         this.client = locationRestClient;
     }
 
-    @Retry(name = "driverContext")
-    @CircuitBreaker(name = "driverContext", fallbackMethod = "failClosed")
+    // The fallback lives on the OUTERMOST aspect (Retry). If it were on the CircuitBreaker, the breaker would
+    // swallow every failure and Retry would never see an exception to retry.
+    @Retry(name = "driverContext", fallbackMethod = "failClosed")
+    @CircuitBreaker(name = "driverContext")
     public Optional<DriverContext> find(String driverId) {
         try {
             return Optional.ofNullable(client.get()

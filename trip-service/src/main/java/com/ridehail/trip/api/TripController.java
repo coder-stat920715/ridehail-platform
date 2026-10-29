@@ -43,7 +43,8 @@ public class TripController {
     @PostMapping
     @PreAuthorize("hasRole('RIDER')")
     public ResponseEntity<TripResponse> book(@Valid @RequestBody BookRideRequest req, @AuthenticationPrincipal Jwt jwt) {
-        TripResponse trip = service.bookRide(jwt.getSubject(), req);
+        String name = jwt.getClaimAsString("preferred_username");
+        TripResponse trip = service.bookRide(jwt.getSubject(), name != null ? name : jwt.getSubject(), req);
         return ResponseEntity.accepted().location(URI.create("/api/v1/trips/" + trip.tripId())).body(trip);
     }
 

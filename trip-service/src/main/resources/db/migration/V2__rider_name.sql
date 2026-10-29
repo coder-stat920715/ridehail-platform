@@ -1,0 +1,1 @@
+ALTER TABLE trips ADD COLUMN rider_name VARCHAR(128);

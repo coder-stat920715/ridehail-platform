@@ -1,0 +1,9 @@
+environment = "dev"
+region      = "ap-south-1"
+zone_name   = "example.com"          # must already exist as a PUBLIC hosted zone in Route 53
+
+# cheap dev defaults; for prod set: single_nat_gateway=false, multi_az=true, deletion_protection=true,
+# larger instance classes, enable_shield_advanced=true
+single_nat_gateway  = true
+multi_az            = false
+deletion_protection = false

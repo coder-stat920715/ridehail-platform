@@ -1,0 +1,32 @@
+# One-off Job: MSK has auto.create.topics.enable=false, so topics (and their DLTs) are created explicitly.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-kafka-topics
+  namespace: ridehail
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topics
+          image: apache/kafka:3.8.0
+          env:
+            - name: BOOTSTRAP
+              valueFrom: { configMapKeyRef: { name: ridehail-config, key: KAFKA_BOOTSTRAP } }
+            - { name: PARTITIONS, value: "6" }
+            - { name: REPLICATION, value: "3" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              printf 'security.protocol=SSL\n' > /tmp/client.properties
+              for t in outbox.event.trip outbox.event.payment-command outbox.event.matching-command \
+                       outbox.event.payment outbox.event.matching outbox.event.driver-location; do
+                for topic in "$t" "$t.DLT"; do
+                  /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config /tmp/client.properties \
+                    --create --if-not-exists --topic "$topic" --partitions "$PARTITIONS" --replication-factor "$REPLICATION"
+                done
+              done

@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - { name: ridehail/eureka-server,    newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/eureka-server,    newTag: "1.0.0" }
+  - { name: ridehail/api-gateway,      newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/gateway-service,  newTag: "1.0.0" }
+  - { name: ridehail/trip-service,     newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/trip-service,     newTag: "1.0.0" }
+  - { name: ridehail/location-service, newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/location-service, newTag: "1.0.0" }
+  - { name: ridehail/payment-service,  newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/payment-service,  newTag: "1.0.0" }
+  - { name: ridehail/matching-service,     newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/matching-service,     newTag: "1.0.0" }
+  - { name: ridehail/notification-service, newName: ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/ridehail/notification-service, newTag: "1.0.0" }
+patches:
+  # prod: more headroom for the hot services
+  - target: { kind: Deployment, name: "trip-service|location-service|api-gateway" }
+    patch: |-
+      - { op: replace, path: /spec/template/spec/containers/0/resources/requests/cpu, value: "1" }
+      - { op: replace, path: /spec/template/spec/containers/0/resources/limits/memory, value: 1536Mi }
+      - { op: replace, path: /spec/template/spec/containers/0/resources/requests/memory, value: 1Gi }
+  - target: { kind: HorizontalPodAutoscaler, name: location-service }
+    patch: |-
+      - { op: replace, path: /spec/maxReplicas, value: 30 }

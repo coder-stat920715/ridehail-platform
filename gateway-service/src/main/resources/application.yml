@@ -32,10 +32,9 @@ spring:
         - RemoveRequestHeader=X-User-Id
         - RemoveRequestHeader=X-User-Roles
       routes:
-        # All routes target the INTERNAL ALB, which does path-based routing to the target groups
-        # (trip-service TG, location-service TG, ...). Gateway -> Internal ALB -> Microservices.
+        # lb://<name> = resolve <name> in Eureka and load-balance client-side (round-robin) across live instances.
         - id: trip-service
-          uri: ${INTERNAL_ALB_URI:http://internal-alb.ridehail.local}
+          uri: lb://trip-service
           predicates:
             - Path=/api/v1/trips/**
           filters:
@@ -64,7 +63,7 @@ spring:
                   basedOnPreviousValue: false
 
         - id: driver-location
-          uri: ${INTERNAL_ALB_URI:http://internal-alb.ridehail.local}
+          uri: lb://location-service
           predicates:
             - Path=/api/v1/drivers/**
           filters:
@@ -80,6 +79,22 @@ spring:
                 name: locationServiceCb
                 fallbackUri: forward:/fallback/location
 
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@slidingWindowRateLimiter}"
+                key-resolver: "#{@userKeyResolver}"
+                sliding-window-rate-limiter.limit: 30     # inbox polling
+                sliding-window-rate-limiter.windowSeconds: 10
+            - name: CircuitBreaker
+              args:
+                name: notificationServiceCb
+                fallbackUri: forward:/fallback/notifications
+
 management:
   endpoints:
     web:
@@ -89,3 +104,13 @@ management:
     health:
       probes:
         enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+    registry-fetch-interval-seconds: 10          # how fast clients notice new/removed instances
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10        # heartbeat
+    lease-expiration-duration-in-seconds: 30     # evicted after 3 missed heartbeats

@@ -1,0 +1,44 @@
+# OPTIONAL: mutual TLS between services using Istio (install Istio, label the namespace `istio-injection: enabled`
+# in k8s/base/00-namespace.yaml, restart the pods so sidecars are injected).
+#
+# Every pod-to-pod call (gateway -> trip, trip -> location, ...) is then encrypted AND both sides present
+# certificates (SPIFFE identities) - without any change to the Java code.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: ridehail
+spec:
+  mtls:
+    mode: STRICT
+---
+# The ALB speaks plain HTTP to the gateway pods (TLS is already terminated/verified at CloudFront + ALB),
+# so the gateway's ingress port must stay PERMISSIVE while everything else is STRICT.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: api-gateway-from-alb
+  namespace: ridehail
+spec:
+  selector:
+    matchLabels: { app: api-gateway }
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    "8080":
+      mode: PERMISSIVE
+---
+# Identity-based authorisation on top of mTLS: only the gateway's service account may call trip-service.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: trip-service-callers
+  namespace: ridehail
+spec:
+  selector:
+    matchLabels: { app: trip-service }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/ridehail/sa/api-gateway"]

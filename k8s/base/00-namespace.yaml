@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ridehail
+  labels:
+    # AWS LB Controller injects a "pod readiness gate" so a new pod only receives ALB traffic once the
+    # target group reports it healthy => zero-downtime rollouts.
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
+    # Uncomment when Istio is installed (see k8s/mesh):
+    # istio-injection: enabled

@@ -1,0 +1,14 @@
+# The glue between Terraform and Kubernetes:
+# Terraform created the external ALB + an IP-type target group. This object tells the AWS Load Balancer Controller
+# to keep that target group's members equal to the api-gateway POD IPs (adds new pods, removes terminated ones).
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: api-gateway
+  namespace: ridehail
+spec:
+  serviceRef:
+    name: api-gateway
+    port: 8080
+  targetGroupARN: REPLACE_ME_terraform_output_alb_target_group_arn
+  targetType: ip
